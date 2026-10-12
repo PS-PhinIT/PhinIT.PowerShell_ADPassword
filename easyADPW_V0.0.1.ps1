@@ -46,7 +46,7 @@ function Write-StartupLog {
         $logEntry | Out-File -FilePath $script:TempLogFile -Append -Encoding utf8 -ErrorAction SilentlyContinue
     } catch {
         # Absoluter Fallback bei Fehler - Konsole
-        try { Write-Host "[CRITICAL] Logging failed: $($_.Exception.Message)" -ForegroundColor Red } catch {}
+        try { Write-Information -MessageData "[CRITICAL] Logging failed: $($_.Exception.Message)" -InformationAction Continue } catch {}
     }
 }
 
@@ -141,7 +141,9 @@ function Write-GuaranteedDebug {
             $rawMessage = "[CRITICAL-FALLBACK] $Message | Error: $($_.Exception.Message)"
             [Console]::WriteLine($rawMessage)
             $rawMessage | Out-File -FilePath "$env:TEMP\easyPASSWORD_debug_critical.log" -Append
-        } catch {}
+        } catch {
+            Write-Debug "Failed to write the emergency diagnostic log: $($_.Exception.Message)"
+        }
     }
 }
 # Das garantiert, dass selbst bei Fehlern im Config-Block die Variable nicht NULL wird
@@ -262,7 +264,7 @@ function Write-DebugMessage {
             try {
                 $filteredMessage | Out-File -FilePath $script:LogFile -Append -Encoding utf8 -ErrorAction SilentlyContinue
             } catch {
-                # Fehler beim Loggen ignorieren
+                Write-Debug "Failed to write the regular log: $($_.Exception.Message)"
             }
         }
 
@@ -300,10 +302,10 @@ function Write-DebugMessage {
 
                         if ($contextVars.Count -gt 0) {
                             Write-Host "Context Variables:" -ForegroundColor DarkGray
-                            $contextVars | ForEach-Object { Write-Host "  → $_" -ForegroundColor DarkGray }
+                            $contextVars | ForEach-Object { Write-Information -MessageData "  → $_" -InformationAction Continue }
                         }
                     } catch {
-                        Write-Host "Fehler beim Ausgeben der Kontextvariablen: $($_.Exception.Message)" -ForegroundColor Red
+                        Write-Information -MessageData "Fehler beim Ausgeben der Kontextvariablen: $($_.Exception.Message)" -InformationAction Continue
                     }
                 }
             } catch {
@@ -316,7 +318,9 @@ function Write-DebugMessage {
             $rawMessage = "[CRITICAL-FALLBACK] $Message | Error: $($_.Exception.Message)"
             [Console]::WriteLine($rawMessage)
             $rawMessage | Out-File -FilePath "$env:TEMP\easyPASSWORD_debug_critical.log" -Append
-        } catch {}
+        } catch {
+            Write-Debug "Failed to write the critical fallback log: $($_.Exception.Message)"
+        }
     }
 }
 
@@ -440,7 +444,7 @@ function Write-DebugMessage {
 
     # DIREKTE AUSGABE
     # 1. Write-Host - immer ausführen!
-    Write-Host $filteredMessage -ForegroundColor $foregroundColor
+    Write-Information -MessageData $filteredMessage -InformationAction Continue
 
     # 2. Auch in den Temp-Log schreiben
     $filteredMessage | Out-File -FilePath $script:TempLogFile -Append -Encoding utf8 -ErrorAction SilentlyContinue
@@ -488,7 +492,7 @@ function Write-DebugMessage {
 
                     if ($contextVars.Count -gt 0) {
                         Write-Host "Context Variables:" -ForegroundColor DarkGray
-                        $contextVars | ForEach-Object { Write-Host "  → $_" -ForegroundColor DarkGray }
+                        $contextVars | ForEach-Object { Write-Information -MessageData "  → $_" -InformationAction Continue }
                     }
                 } catch {
                     Write-Host "Fehler beim Ausgeben der Kontextvariablen: $($_.Exception.Message)" -ForegroundColor Red
@@ -523,7 +527,7 @@ function Write-TemporaryLog {
         $TempLogFile = "$env:TEMP\easyPASSWORDRESET_startup.log"
         Add-Content -Path $TempLogFile -Value $LogEntry -ErrorAction SilentlyContinue
     } catch {
-        # Stille Fehlerbehandlung
+        Write-Debug "Failed to write the temporary startup log: $($_.Exception.Message)"
     }
 }
 
@@ -1368,7 +1372,7 @@ function Get-ADUserSafe {
 function Export-PasswordResetReport {
     param (
         [string]$Username,
-        [string]$NewPassword
+        [System.Security.SecureString]$NewPassword
     )
     try {
         Write-DebugMessage "Starte Export-PasswordResetReport für Benutzer: $Username" -Component "PasswordReporting"
@@ -1379,10 +1383,17 @@ function Export-PasswordResetReport {
             return $false
         }
 
-        if ([string]::IsNullOrWhiteSpace($NewPassword)) {
+        if ($null -eq $NewPassword -or $NewPassword.Length -eq 0) {
             Write-Log "Passwort für Berichtserstellung ist leer." -Level "Warning"
             Write-DebugMessage "Passwort ist leer, setze Standardwert für Bericht" -Component "PasswordReporting" -Level "Warning"
-            $NewPassword = "[Passwort nicht verfügbar]"
+            $plainPassword = "[Passwort nicht verfügbar]"
+        } else {
+            $passwordPointer = [System.Runtime.InteropServices.Marshal]::SecureStringToBSTR($NewPassword)
+            try {
+                $plainPassword = [System.Runtime.InteropServices.Marshal]::PtrToStringBSTR($passwordPointer)
+            } finally {
+                [System.Runtime.InteropServices.Marshal]::ZeroFreeBSTR($passwordPointer)
+            }
         }
 
         Write-Log "Erstelle Bericht für Passwort-Reset von Benutzer $Username." -Level "Info"
@@ -1498,7 +1509,7 @@ function Export-PasswordResetReport {
     <h2>Passwort-Reset Details</h2>
     <table>
         <tr><th>Zurückgesetzt von</th><td>$($env:USERNAME)</td></tr>
-        <tr><th>Neues Passwort</th><td class="password">$NewPassword</td></tr>
+        <tr><th>Neues Passwort</th><td class="password">$plainPassword</td></tr>
         <tr><th>Reset-Zeitpunkt</th><td>$(Get-Date -Format "dd.MM.yyyy HH:mm:ss")</td></tr>
     </table>
 
@@ -1531,7 +1542,7 @@ Vorgesetzter: $managerInfo
 Passwort-Reset Details:
 ---------------------
 Zurückgesetzt von: $($env:USERNAME)
-Neues Passwort: $NewPassword
+Neues Passwort: $plainPassword
 Reset-Zeitpunkt: $(Get-Date -Format "dd.MM.yyyy HH:mm:ss")
 
 Erstellt mit $($script:AppName)
@@ -1828,7 +1839,7 @@ function Reset-Password {
 
                     # Prüfe ob Export-PasswordResetReport existiert und funktionsfähig ist
                     if (Get-Command -Name "Export-PasswordResetReport" -ErrorAction SilentlyContinue) {
-                        $reportResult = Export-PasswordResetReport -Username $Username -NewPassword $NewPassword
+                        $reportResult = Export-PasswordResetReport -Username $Username -NewPassword $SecurePassword
 
                         if ($reportResult) {
                             Write-DebugMessage "Bericht wurde erfolgreich erstellt" -Component "PasswordReset"
@@ -2352,6 +2363,9 @@ function Add-GroupToFGPP {
 }
 
 function Remove-GroupFromFGPP {
+    [CmdletBinding(SupportsShouldProcess = $true)]
+    param ()
+
     try {
         $selectedGroup = $lstFGPPAppliedGroups.SelectedItem
 
@@ -2360,8 +2374,10 @@ function Remove-GroupFromFGPP {
             return
         }
 
-        $lstFGPPAppliedGroups.Items.Remove($selectedGroup)
-        Update-Status "Gruppe $selectedGroup aus der FGPP entfernt." "Info"
+        if ($PSCmdlet.ShouldProcess($selectedGroup, "Remove from FGPP list")) {
+            $lstFGPPAppliedGroups.Items.Remove($selectedGroup)
+            Update-Status "Gruppe $selectedGroup aus der FGPP entfernt." "Info"
+        }
     } catch {
         $errorMsg = "Fehler beim Entfernen der Gruppe: $($_)"
         Write-Log $errorMsg
@@ -4505,7 +4521,7 @@ function Test-NullObject {
 
                 # Callstack für Debug-Information zur Fehlerquelle
                 $callStack = Get-PSCallStack | Select-Object -Skip 1 | Select-Object -First 3
-                Write-Host "Aufgerufen von:" -ForegroundColor Red
+                Write-Information -MessageData "Aufgerufen von:" -InformationAction Continue
                 foreach ($call in $callStack) {
                     Write-Host "  - $($call.Command) in $($call.ScriptName):$($call.ScriptLineNumber)" -ForegroundColor DarkRed
                 }
@@ -4531,7 +4547,7 @@ function Test-NullObject {
     } catch {
         # Absoluter Fallback bei Fehler in der Null-Prüfung selbst
         try {
-            Write-Host "KRITISCHER FEHLER in NULL-Prüfung: $($_.Exception.Message)" -ForegroundColor DarkRed
+            Write-Information -MessageData "KRITISCHER FEHLER in NULL-Prüfung: $($_.Exception.Message)" -InformationAction Continue
             return $false
         } catch {
             # Absoluter stiller Fallback
@@ -4557,7 +4573,7 @@ function Get-SafeObject {
         }
     } catch {
         try {
-            Write-Host "KRITISCHER FEHLER in Get-SafeObject für $ObjectName`: $($_.Exception.Message)" -ForegroundColor DarkRed
+            Write-Information -MessageData "KRITISCHER FEHLER in Get-SafeObject für $ObjectName`: $($_.Exception.Message)" -InformationAction Continue
             return $DefaultValue
         } catch {
             # Absoluter stiller Fallback
@@ -5075,7 +5091,7 @@ function Initialize-GUI-Safe {
         } catch {
             Write-Error "Konnte MessageBox nicht anzeigen: $($_)"
             # Absolute Fallback-Methode
-            Write-Host "KRITISCHER FEHLER: $errorMessage" -ForegroundColor Red
+            Write-Information -MessageData "KRITISCHER FEHLER: $errorMessage" -InformationAction Continue
         }
     }
 }
@@ -5120,8 +5136,8 @@ function Exit-Application {
         # Abschließenden Banner ausgeben
         Write-Host ""
         Write-Host "====================================================" -ForegroundColor Cyan
-        Write-Host " $($script:AppName) wurde beendet" -ForegroundColor Cyan
-        Write-Host "====================================================" -ForegroundColor Cyan
+        Write-Information -MessageData " $($script:AppName) wurde beendet" -InformationAction Continue
+        Write-Information -MessageData "====================================================" -InformationAction Continue
         Write-Host ""
 
         # Alle verbleibenden Runspaces und Jobs aufräumen
@@ -5334,7 +5350,7 @@ try {
         [System.Windows.MessageBox]::Show($errorMsg, "Kritischer Fehler", "OK", "Error")
     } catch {
         Write-Error "Konnte MessageBox nicht anzeigen: $($_)"
-        Write-Host $errorMsg -ForegroundColor Red
+        Write-Information -MessageData $errorMsg -InformationAction Continue
     }
 
     # Beende mit Fehlercode
