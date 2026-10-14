@@ -1,1 +1,4 @@
-/Reports
+# Laufzeitdaten von easyADPW (enthalten ggf. Kennwörter bzw. personenbezogene Daten)
+Reports/
+Logs/
+*.log
