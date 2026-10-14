@@ -525,9 +525,16 @@ function Get-GroupList {
 
     if ($Refresh -or $null -eq $script:GroupCache) {
         Assert-ADAvailable
-        $script:GroupCache = @(Get-ADGroup -Filter * -Properties Name -ErrorAction Stop |
-                Sort-Object -Property Name |
-                Select-Object -ExpandProperty Name)
+        $groups = @(Get-ADGroup -Filter * -ErrorAction Stop | Sort-Object -Property Name, DistinguishedName)
+        # CN ist nur je Container eindeutig - doppelte Namen werden mit dem Pfad angezeigt
+        $duplicates = @($groups | Group-Object -Property Name | Where-Object { $_.Count -gt 1 } | ForEach-Object { $_.Name })
+        $script:GroupCache = @(foreach ($g in $groups) {
+                $display = $g.Name
+                if ($duplicates -contains $g.Name) {
+                    $display = '{0}  ({1})' -f $g.Name, (Get-ParentDistinguishedName -DistinguishedName $g.DistinguishedName)
+                }
+                [pscustomobject]@{ Display = $display; Name = $g.Name; DistinguishedName = $g.DistinguishedName }
+            })
         Write-AppLog -Message ("{0} Gruppen geladen." -f $script:GroupCache.Count) -Level DEBUG
     }
     return , $script:GroupCache
@@ -542,14 +549,12 @@ function Get-GroupMemberUser {
     [CmdletBinding()]
     [OutputType([object[]])]
     param(
-        [Parameter(Mandatory)][string]$GroupName,
+        [Parameter(Mandatory)][string]$Identity,
         [string[]]$Property = @()
     )
 
     Assert-ADAvailable
-    $group = Get-ADGroup -Filter ("Name -eq '{0}'" -f (ConvertTo-ADFilterValue $GroupName)) -ErrorAction Stop |
-        Select-Object -First 1
-    if (-not $group) { throw "Gruppe '$GroupName' wurde nicht gefunden." }
+    $group = Get-ADGroup -Identity $Identity -ErrorAction Stop
 
     # primaryGroupToken entspricht der RID der Gruppen-SID (konstruiertes Attribut, nur per Base-Suche lesbar)
     $rid = $group.SID.Value.Split('-')[-1]
@@ -561,18 +566,37 @@ function Get-GroupMemberUser {
 
 #region Berichte
 $script:ReportFolderReady = $false
+$script:ReportFolderPath = $null
 
 function Initialize-ReportFolder {
     [CmdletBinding()]
     [OutputType([string])]
     param()
 
-    $folder = $script:Config.ReportFolder
-    if ($script:ReportFolderReady) { return $folder }
+    if ($script:ReportFolderReady) { return $script:ReportFolderPath }
 
-    if (-not (Test-Path -LiteralPath $folder)) {
-        New-Item -Path $folder -ItemType Directory -Force -ErrorAction Stop | Out-Null
+    # Fallback auf das Benutzerprofil, falls der Skriptordner nicht beschreibbar ist (z. B. Program Files, Share)
+    $candidates = @(
+        $script:Config.ReportFolder,
+        (Join-Path ([Environment]::GetFolderPath('LocalApplicationData')) (Join-Path $script:Config.AppName 'Reports'))
+    )
+    $folder = $null
+    foreach ($candidate in $candidates) {
+        try {
+            if (-not (Test-Path -LiteralPath $candidate)) {
+                New-Item -Path $candidate -ItemType Directory -Force -ErrorAction Stop | Out-Null
+            }
+            $probe = Join-Path $candidate ('.write-test_{0}' -f [guid]::NewGuid().ToString('N'))
+            [System.IO.File]::WriteAllText($probe, '')
+            Remove-Item -LiteralPath $probe -Force -ErrorAction SilentlyContinue
+            $folder = $candidate
+            break
+        }
+        catch {
+            Write-AppLog -Message "Berichtsordner nicht beschreibbar: $candidate ($($_.Exception.Message))" -Level WARN
+        }
     }
+    if (-not $folder) { throw 'Es konnte kein beschreibbarer Berichtsordner gefunden werden. Vorgang abgebrochen.' }
 
     if ($script:Config.RestrictReportFolderAcl) {
         try {
@@ -591,6 +615,7 @@ function Initialize-ReportFolder {
         }
     }
 
+    $script:ReportFolderPath = $folder
     $script:ReportFolderReady = $true
     return $folder
 }
@@ -1146,12 +1171,12 @@ function Get-BulkTarget {
         return [pscustomobject]@{ Label = $label; Name = $script:treeViewOUs.SelectedItem.Header; Users = $users }
     }
 
-    $groupName = [string]$script:cmbGroups.SelectedItem
-    if ([string]::IsNullOrWhiteSpace($groupName)) {
+    $group = $script:cmbGroups.SelectedItem
+    if (-not $group) {
         Write-StatusMessage -Area Bulk -Message 'Bitte eine Gruppe auswählen.' -Level WARN -NoLog
         return $null
     }
-    return [pscustomobject]@{ Label = "Gruppe $groupName"; Name = $groupName; Users = @(Get-GroupMemberUser -GroupName $groupName -Property $Property) }
+    return [pscustomobject]@{ Label = ('Gruppe {0}' -f $group.DistinguishedName); Name = $group.Name; Users = @(Get-GroupMemberUser -Identity $group.DistinguishedName -Property $Property) }
 }
 
 function Update-GroupMemberList {
@@ -1160,14 +1185,14 @@ function Update-GroupMemberList {
     param()
 
     $script:lstGroupMembers.ItemsSource = $null
-    $groupName = [string]$script:cmbGroups.SelectedItem
-    if ([string]::IsNullOrWhiteSpace($groupName)) { return }
+    $group = $script:cmbGroups.SelectedItem
+    if (-not $group) { return }
 
-    $members = Get-GroupMemberUser -GroupName $groupName
+    $members = Get-GroupMemberUser -Identity $group.DistinguishedName
     $script:lstGroupMembers.ItemsSource = @(foreach ($m in $members) {
             if ($m.DisplayName) { '{0}  ({1})' -f $m.SamAccountName, $m.DisplayName } else { $m.SamAccountName }
         })
-    Write-StatusMessage -Area Bulk -Message ("Gruppe '{0}': {1} Benutzer." -f $groupName, $members.Count) -NoLog
+    Write-StatusMessage -Area Bulk -Message ("Gruppe '{0}': {1} Benutzer." -f $group.Display, $members.Count) -NoLog
 }
 
 function Invoke-BulkPasswordReset {
@@ -1197,6 +1222,9 @@ function Invoke-BulkPasswordReset {
         Write-StatusMessage -Area Bulk -Message ("Alle {0} Konten in {1} sind geschützt und werden übersprungen." -f $rows.Count, $target.Label) -Level WARN
         return
     }
+
+    # Berichtsordner vor dem Reset pruefen - die neuen Kennwoerter existieren nur im Bericht
+    $null = Initialize-ReportFolder
 
     $msg = "Für {0} Benutzer in {1} werden neue Kennwörter gesetzt.`n{2} geschützte Konten werden übersprungen.`n`nDieser Vorgang kann nicht rückgängig gemacht werden. Fortfahren?" -f $eligible.Count, $target.Label, $rows.Count
     if (-not (Confirm-Action -Message $msg -Title 'Massen-Kennwortreset' -Icon Warning)) { return }
@@ -1458,13 +1486,12 @@ function Add-FGPPFormGroup {
     [CmdletBinding()]
     param()
 
-    $groupName = [string]$script:cmbFGPPGroups.SelectedItem
-    if ([string]::IsNullOrWhiteSpace($groupName)) {
+    $selected = $script:cmbFGPPGroups.SelectedItem
+    if (-not $selected) {
         Write-StatusMessage -Area FGPP -Message 'Bitte eine Gruppe auswählen.' -Level WARN -NoLog
         return
     }
-    $group = Get-ADGroup -Filter ("Name -eq '{0}'" -f (ConvertTo-ADFilterValue $groupName)) -ErrorAction Stop | Select-Object -First 1
-    if (-not $group) { throw "Gruppe '$groupName' wurde nicht gefunden." }
+    $group = Get-ADGroup -Identity $selected.DistinguishedName -ErrorAction Stop
     if ((Get-FGPPFormSubject) -contains $group.DistinguishedName) { return }
 
     $item = New-Object System.Windows.Controls.ListBoxItem
@@ -1490,6 +1517,7 @@ function New-FGPP {
         [string[]]$Subject = @()
     )
 
+    $Subject = @($Subject | Where-Object { $_ })
     if (-not $PSCmdlet.ShouldProcess($Setting.Name, 'FGPP erstellen')) { return }
     New-ADFineGrainedPasswordPolicy @Setting -ErrorAction Stop
     if ($Subject.Count -gt 0) {
@@ -1506,6 +1534,7 @@ function Set-FGPP {
         [string[]]$Subject = @()
     )
 
+    $Subject = @($Subject | Where-Object { $_ })
     if (-not $PSCmdlet.ShouldProcess($Identity, 'FGPP ändern')) { return }
 
     $params = @{} + $Setting
@@ -1782,7 +1811,7 @@ $script:XamlText = @'
 
                     <GroupBox Header="Gruppen" Grid.Column="1">
                         <DockPanel>
-                            <ComboBox x:Name="cmbGroups" DockPanel.Dock="Top" IsTextSearchEnabled="True" Margin="0,0,0,8">
+                            <ComboBox x:Name="cmbGroups" DockPanel.Dock="Top" IsTextSearchEnabled="True" DisplayMemberPath="Display" TextSearch.TextPath="Display" Margin="0,0,0,8">
                                 <ComboBox.ItemsPanel>
                                     <ItemsPanelTemplate>
                                         <VirtualizingStackPanel/>
@@ -1884,7 +1913,7 @@ $script:XamlText = @'
                             <DockPanel Grid.Column="1">
                                 <DockPanel DockPanel.Dock="Top" Margin="0,0,0,6">
                                     <Button x:Name="btnAddGroup" DockPanel.Dock="Right" Content="Hinzufügen" Margin="8,0,0,0"/>
-                                    <ComboBox x:Name="cmbFGPPGroups" IsTextSearchEnabled="True">
+                                    <ComboBox x:Name="cmbFGPPGroups" IsTextSearchEnabled="True" DisplayMemberPath="Display" TextSearch.TextPath="Display">
                                         <ComboBox.ItemsPanel>
                                             <ItemsPanelTemplate>
                                                 <VirtualizingStackPanel/>

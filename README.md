@@ -30,7 +30,7 @@ PhinIT.PowerShell_ADPassword/
 └── README.md
 ```
 
-Zur Laufzeit legt das Skript neben sich die Ordner `Logs\` und `Reports\` an (beide in `.gitignore`).
+Zur Laufzeit legt das Skript neben sich die Ordner `Logs\` und `Reports\` an (beide in `.gitignore`). Ist der Skriptordner nicht beschreibbar, wird `%LOCALAPPDATA%\easyPASSWORDRESET\Reports` bzw. `%TEMP%` (Log) verwendet.
 
 ---
 

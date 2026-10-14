@@ -44,6 +44,8 @@ Schweregrade: **Kritisch** · **Hoch** · **Mittel** · **Niedrig**. Alle Befund
 | FUN-09 | Niedrig | In `catch`-Blöcken der Massenvorgänge wurden Daten des vorherigen Benutzers protokolliert. | Fehler werden pro Benutzer erfasst. | ✅ |
 | FUN-10 | Niedrig | Versionsangabe im Bericht hartcodiert (`0.2`), Log entfernte Umlaute. | `$script:AppVersion`, UTF-8-Log. | ✅ |
 | FUN-11 | Niedrig | `ChangePasswordAtLogon` schlug bei „Kennwort läuft nie ab“ ohne Hinweis fehl. | Hinweis im Status und Bericht; Kombination in den Optionen blockiert. | ✅ |
+| FUN-12 | Mittel | Gruppen wurden per Anzeigename gesucht (`-First 1`); bei gleichnamigen Gruppen in verschiedenen OUs konnte die falsche Gruppe verarbeitet werden. | Auswahl trägt den DN, Auflösung per `-Identity`; doppelte Namen werden mit Pfad angezeigt. | ✅ |
+| FUN-13 | Mittel | War der Berichtsordner nicht beschreibbar, gingen beim Massen-Reset alle neuen Kennwörter verloren. | Ordner wird vor dem Reset geprüft, Fallback ins Benutzerprofil, sonst Abbruch vor Änderungen. | ✅ |
 
 ## 3. Performance
 

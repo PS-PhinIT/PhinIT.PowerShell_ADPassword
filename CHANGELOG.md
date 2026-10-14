@@ -38,6 +38,8 @@ Vollständiges Audit (Sicherheit, Performance, Funktionen, Verweise, GUI, Befehl
 
 ### Behoben
 - Gruppen-Reset enthielt kopierte Entsperr-Logik und bot den Bericht nicht an.
+- Gruppen werden über den Distinguished Name statt über den (nur je Container eindeutigen) Namen aufgelöst; doppelte Namen werden mit Pfad angezeigt.
+- Berichtsordner wird vor dem Massen-Reset geprüft (Fallback `%LOCALAPPDATA%\easyPASSWORDRESET\Reports`), damit keine Kennwörter ohne Bericht gesetzt werden.
 - FGPP-Bearbeiten: Priorität wurde nicht übernommen (`[ref]` auf Hashtable-Wert), nicht initialisierte Variable für das Mindestalter, Fehler bei FGPP ohne Zielgruppen, Speichern wirkte auf die aktuell markierte statt die bearbeitete Richtlinie.
 - FGPP mit „Vor versehentlichem Löschen schützen“ konnten nicht gelöscht werden.
 - Entsperren einer OU nutzte `-Filter {LockedOut -eq $true}` (nicht filterbar) – jetzt `Search-ADAccount -LockedOut`.
